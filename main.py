@@ -29,13 +29,16 @@ pyautogui.PAUSE = 0.5
 class AIAutomationAgent:
     def __init__(self):
         """Initialize the AI automation agent with all necessary components."""
+        # Initialize basic attributes first
+        self.command_queue = queue.Queue()
+        self.is_listening = False
+        self.is_running = True
+        
+        # Setup components
         self.setup_openai()
         self.setup_speech_recognition()
         self.setup_tts()
         self.setup_gui()
-        self.command_queue = queue.Queue()
-        self.is_listening = False
-        self.is_running = True
         
         # Define system commands and their implementations
         self.system_commands = {
@@ -175,7 +178,7 @@ class AIAutomationAgent:
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         
-        # Start command processing thread
+        # Start command processing thread after all initialization is complete
         self.command_thread = threading.Thread(target=self.process_commands, daemon=True)
         self.command_thread.start()
 
@@ -193,8 +196,13 @@ class AIAutomationAgent:
     def speak(self, text: str):
         """Convert text to speech."""
         try:
-            self.tts_engine.say(text)
-            self.tts_engine.runAndWait()
+            # Run TTS in a separate thread to avoid blocking
+            def tts_thread():
+                self.tts_engine.say(text)
+                self.tts_engine.runAndWait()
+            
+            threading.Thread(target=tts_thread, daemon=True).start()
+            self.log_message(f"🔊 Speaking: {text}")
         except Exception as e:
             self.log_message(f"❌ TTS Error: {str(e)}")
 
@@ -222,6 +230,8 @@ class AIAutomationAgent:
     def parse_command_with_ai(self, user_input: str) -> Dict:
         """Use OpenAI to parse and understand the user's command."""
         try:
+            self.log_message(f"🤖 Sending to AI: {user_input}")
+            
             system_prompt = """You are an AI assistant that helps parse user commands for PC automation.
             
             Available commands:
@@ -246,14 +256,17 @@ class AIAutomationAgent:
             - volume_down: Decrease volume
             - mute_unmute: Mute or unmute audio
             
-            Parse the user's command and return a JSON response with:
+            Parse the user's command and return ONLY a JSON response with:
             - "command": the appropriate command from the list above
             - "parameters": any required parameters (like query for search, text for typing)
             - "description": a brief description of what will be executed
             
-            If the command is unclear or not supported, return:
-            - "command": "unknown"
-            - "error": explanation of the issue
+            Examples:
+            Input: "open vs code" -> {"command": "open_vscode", "parameters": {}, "description": "Opening Visual Studio Code"}
+            Input: "search google for python" -> {"command": "google_search", "parameters": {"query": "python"}, "description": "Searching Google for python"}
+            Input: "type hello world" -> {"command": "type_text", "parameters": {"text": "hello world"}, "description": "Typing hello world"}
+            
+            Return ONLY the JSON, no other text.
             """
             
             response = self.openai_client.chat.completions.create(
@@ -263,35 +276,56 @@ class AIAutomationAgent:
                     {"role": "user", "content": user_input}
                 ],
                 max_tokens=200,
-                temperature=0.3
+                temperature=0.1
             )
             
             ai_response = response.choices[0].message.content.strip()
             self.log_message(f"🤖 AI Response: {ai_response}")
             
+            # Clean up the response (remove code blocks if present)
+            if ai_response.startswith("```"):
+                ai_response = ai_response.split("```")[1]
+            if ai_response.startswith("json"):
+                ai_response = ai_response[4:].strip()
+            
             # Parse JSON response
             try:
                 parsed_command = json.loads(ai_response)
                 return parsed_command
-            except json.JSONDecodeError:
-                # If JSON parsing fails, try to extract key information
-                return {
-                    "command": "unknown",
-                    "error": "Failed to parse AI response as JSON"
-                }
+            except json.JSONDecodeError as e:
+                self.log_message(f"❌ JSON Parse Error: {str(e)}")
+                # Try to create a simple fallback command
+                user_lower = user_input.lower()
+                if "vs code" in user_lower or "vscode" in user_lower:
+                    return {"command": "open_vscode", "parameters": {}, "description": "Opening Visual Studio Code"}
+                elif "chrome" in user_lower:
+                    return {"command": "open_chrome", "parameters": {}, "description": "Opening Google Chrome"}
+                elif "notepad" in user_lower:
+                    return {"command": "open_notepad", "parameters": {}, "description": "Opening Notepad"}
+                else:
+                    return {"command": "unknown", "error": "Failed to parse command"}
                 
         except Exception as e:
             self.log_message(f"❌ Error calling OpenAI API: {str(e)}")
-            return {
-                "command": "unknown",
-                "error": f"API Error: {str(e)}"
-            }
+            # Fallback parsing without AI
+            user_lower = user_input.lower()
+            if "vs code" in user_lower or "vscode" in user_lower:
+                return {"command": "open_vscode", "parameters": {}, "description": "Opening Visual Studio Code"}
+            elif "chrome" in user_lower:
+                return {"command": "open_chrome", "parameters": {}, "description": "Opening Google Chrome"}
+            elif "notepad" in user_lower:
+                return {"command": "open_notepad", "parameters": {}, "description": "Opening Notepad"}
+            else:
+                return {"command": "unknown", "error": f"API Error and no fallback match: {str(e)}"}
 
     def execute_command(self, command_data: Dict):
         """Execute the parsed command."""
         try:
             command = command_data.get('command', '')
             parameters = command_data.get('parameters', {})
+            description = command_data.get('description', '')
+            
+            self.log_message(f"⚡ Executing command: {command}")
             
             if command == 'unknown':
                 error_msg = command_data.get('error', 'Unknown command')
@@ -304,21 +338,24 @@ class AIAutomationAgent:
                 self.speak("This command is not yet implemented.")
                 return
             
-            # Execute the command
-            self.log_message(f"⚡ Executing: {command}")
-            if command_data.get('description'):
-                self.speak(f"Executing: {command_data['description']}")
+            # Speak what we're about to do
+            if description:
+                self.speak(description)
+            else:
+                self.speak(f"Executing {command}")
             
-            # Call the appropriate method
+            # Execute the command
             if parameters:
                 self.system_commands[command](**parameters)
             else:
                 self.system_commands[command]()
             
             self.log_message(f"✅ Command '{command}' executed successfully")
+            self.speak("Command completed successfully.")
             
         except Exception as e:
-            self.log_message(f"❌ Error executing command: {str(e)}")
+            error_msg = f"Error executing command: {str(e)}"
+            self.log_message(f"❌ {error_msg}")
             self.speak("Sorry, there was an error executing that command.")
 
     # System command implementations
@@ -338,13 +375,46 @@ class AIAutomationAgent:
         """Open Visual Studio Code."""
         try:
             if sys.platform == "win32":
-                subprocess.run(["code"])
+                # Try multiple common VS Code installation paths
+                paths = [
+                    "code",  # If in PATH
+                    r"C:\Users\{}\AppData\Local\Programs\Microsoft VS Code\Code.exe".format(os.getenv('USERNAME')),
+                    r"C:\Program Files\Microsoft VS Code\Code.exe",
+                    r"C:\Program Files (x86)\Microsoft VS Code\Code.exe"
+                ]
+                
+                success = False
+                for path in paths:
+                    try:
+                        if path == "code":
+                            subprocess.run([path], check=True)
+                        else:
+                            if os.path.exists(path):
+                                subprocess.run([path], check=True)
+                        success = True
+                        break
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        continue
+                
+                if not success:
+                    # Try opening through Windows start menu
+                    subprocess.run(["start", "code"], shell=True)
+                    
             elif sys.platform == "darwin":  # macOS
                 subprocess.run(["open", "-a", "Visual Studio Code"])
             else:  # Linux
                 subprocess.run(["code"])
+                
         except Exception as e:
             self.log_message(f"❌ Error opening VS Code: {str(e)}")
+            # Try alternative method
+            try:
+                if sys.platform == "win32":
+                    os.system("start code")
+                else:
+                    os.system("code")
+            except Exception as e2:
+                self.log_message(f"❌ Alternative VS Code open failed: {str(e2)}")
 
     def open_notepad(self):
         """Open Notepad."""
