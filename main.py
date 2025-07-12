@@ -3,6 +3,7 @@
 AI-Powered PC Automation Agent
 A hackathon project that uses AI to understand and execute computer automation tasks.
 Supports both voice and text input with various system automation capabilities.
+Now using Google Gemini API instead of OpenAI.
 """
 
 import os
@@ -15,7 +16,7 @@ import subprocess
 import pyautogui
 import pyttsx3
 import speech_recognition as sr
-from openai import OpenAI
+import google.generativeai as genai
 from typing import Dict, List, Optional
 import keyboard
 import tkinter as tk
@@ -35,7 +36,7 @@ class AIAutomationAgent:
         self.is_running = True
         
         # Setup components
-        self.setup_openai()
+        self.setup_gemini()
         self.setup_speech_recognition()
         self.setup_tts()
         self.setup_gui()
@@ -64,23 +65,28 @@ class AIAutomationAgent:
             'mute_unmute': self.mute_unmute
         }
 
-    def setup_openai(self):
-        """Set up OpenAI client with API key."""
+    def setup_gemini(self):
+        """Set up Google Gemini API client with API key."""
         try:
             # Try to get API key from environment variable
-            api_key = os.getenv('OPENAI_API_KEY')
+            api_key = os.getenv('GOOGLE_API_KEY')
             if not api_key:
                 # If not found, prompt user
-                print("OpenAI API key not found in environment variables.")
-                print("Please set OPENAI_API_KEY environment variable or enter it now:")
-                api_key = input("Enter your OpenAI API key: ").strip()
+                print("Google API key not found in environment variables.")
+                print("Please set GOOGLE_API_KEY environment variable or enter it now:")
+                api_key = input("Enter your Google API key: ").strip()
                 if not api_key:
-                    raise ValueError("OpenAI API key is required")
+                    raise ValueError("Google API key is required")
             
-            self.openai_client = OpenAI(api_key=api_key)
-            self.log_message("✅ OpenAI client initialized successfully")
+            # Configure the API
+            genai.configure(api_key=api_key)
+            
+            # Initialize the model
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            self.log_message("✅ Google Gemini API initialized successfully")
         except Exception as e:
-            self.log_message(f"❌ Error setting up OpenAI: {str(e)}")
+            self.log_message(f"❌ Error setting up Gemini API: {str(e)}")
             sys.exit(1)
 
     def setup_speech_recognition(self):
@@ -110,7 +116,7 @@ class AIAutomationAgent:
     def setup_gui(self):
         """Set up the graphical user interface."""
         self.root = tk.Tk()
-        self.root.title("AI PC Automation Agent")
+        self.root.title("AI PC Automation Agent (Gemini)")
         self.root.geometry("800x600")
         self.root.configure(bg='#2b2b2b')
         
@@ -119,7 +125,7 @@ class AIAutomationAgent:
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # Title
-        title_label = ttk.Label(main_frame, text="🤖 AI PC Automation Agent", 
+        title_label = ttk.Label(main_frame, text="🤖 AI PC Automation Agent (Gemini)", 
                                font=("Arial", 16, "bold"))
         title_label.grid(row=0, column=0, columnspan=2, pady=(0, 10))
         
@@ -228,11 +234,11 @@ class AIAutomationAgent:
             return None
 
     def parse_command_with_ai(self, user_input: str) -> Dict:
-        """Use OpenAI to parse and understand the user's command."""
+        """Use Google Gemini to parse and understand the user's command."""
         try:
-            self.log_message(f"🤖 Sending to AI: {user_input}")
+            self.log_message(f"🤖 Sending to Gemini: {user_input}")
             
-            system_prompt = """You are an AI assistant that helps parse user commands for PC automation.
+            prompt = f"""You are an AI assistant that helps parse user commands for PC automation.
             
             Available commands:
             - open_chrome: Open Google Chrome browser
@@ -257,66 +263,141 @@ class AIAutomationAgent:
             - mute_unmute: Mute or unmute audio
             
             Parse the user's command and return ONLY a JSON response with:
-            - "command": the appropriate command from the list above
+            - "command": the appropriate command from the list above, or "unknown" if no match
             - "parameters": any required parameters (like query for search, text for typing)
             - "description": a brief description of what will be executed
-            
+
+            If no command matches, return: {{"command": "unknown", "parameters": {{}}, "description": "Command not recognized"}}            
             Examples:
-            Input: "open vs code" -> {"command": "open_vscode", "parameters": {}, "description": "Opening Visual Studio Code"}
-            Input: "search google for python" -> {"command": "google_search", "parameters": {"query": "python"}, "description": "Searching Google for python"}
-            Input: "type hello world" -> {"command": "type_text", "parameters": {"text": "hello world"}, "description": "Typing hello world"}
+            Input: "open vs code" -> {{"command": "open_vscode", "parameters": {{}}, "description": "Opening Visual Studio Code"}}
+            Input: "search google for python" -> {{"command": "google_search", "parameters": {{"query": "python"}}, "description": "Searching Google for python"}}
+            Input: "type hello world" -> {{"command": "type_text", "parameters": {{"text": "hello world"}}, "description": "Typing hello world"}}
+            Input: "hello world" -> {{"command": "type_text", "parameters": {{"text": "hello world"}}, "description": "Typing hello world"}}
+            Input: "write something" -> {{"command": "type_text", "parameters": {{"text": "something"}}, "description": "Typing something"}}
             
-            Return ONLY the JSON, no other text.
-            """
+            Special rules:
+            - If user provides plain text without a clear command verb, interpret it as a type_text command
+            - Commands like "hello world", "write this", or any plain text should use type_text
+            - Always try to match to an available command rather than returning unknown
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_input}
-                ],
-                max_tokens=200,
-                temperature=0.1
-            )
+            User command: "{user_input}"
             
-            ai_response = response.choices[0].message.content.strip()
-            self.log_message(f"🤖 AI Response: {ai_response}")
+            Return ONLY the JSON, no other text."""
+            
+            # Generate response using Gemini
+            response = self.model.generate_content(prompt)
+            ai_response = response.text.strip()
+            
+            self.log_message(f"🤖 Gemini Response: {ai_response}")
             
             # Clean up the response (remove code blocks if present)
             if ai_response.startswith("```"):
-                ai_response = ai_response.split("```")[1]
-            if ai_response.startswith("json"):
-                ai_response = ai_response[4:].strip()
+                lines = ai_response.split('\n')
+                # Find the JSON part
+                json_start = -1
+                json_end = -1
+                for i, line in enumerate(lines):
+                    if line.strip().startswith('{'):
+                        json_start = i
+                    if line.strip().endswith('}') and json_start != -1:
+                        json_end = i
+                        break
+                
+                if json_start != -1 and json_end != -1:
+                    ai_response = '\n'.join(lines[json_start:json_end+1])
+            
+            # Remove any remaining markdown formatting
+            ai_response = ai_response.replace('```json', '').replace('```', '').strip()
             
             # Parse JSON response
             try:
                 parsed_command = json.loads(ai_response)
+                # Handle null command
+                if parsed_command.get('command') is None:
+                    parsed_command['command'] = 'unknown'
                 return parsed_command
             except json.JSONDecodeError as e:
                 self.log_message(f"❌ JSON Parse Error: {str(e)}")
-                # Try to create a simple fallback command
-                user_lower = user_input.lower()
-                if "vs code" in user_lower or "vscode" in user_lower:
-                    return {"command": "open_vscode", "parameters": {}, "description": "Opening Visual Studio Code"}
-                elif "chrome" in user_lower:
-                    return {"command": "open_chrome", "parameters": {}, "description": "Opening Google Chrome"}
-                elif "notepad" in user_lower:
-                    return {"command": "open_notepad", "parameters": {}, "description": "Opening Notepad"}
-                else:
-                    return {"command": "unknown", "error": "Failed to parse command"}
+                # Try to extract JSON from the response
+                try:
+                    # Look for JSON-like structure in the response
+                    start_idx = ai_response.find('{')
+                    end_idx = ai_response.rfind('}') + 1
+                    if start_idx != -1 and end_idx != -1:
+                        json_str = ai_response[start_idx:end_idx]
+                        parsed_command = json.loads(json_str)
+                        return parsed_command
+                except:
+                    pass
+                
+                # Fallback to simple parsing
+                return self.fallback_parse_command(user_input)
                 
         except Exception as e:
-            self.log_message(f"❌ Error calling OpenAI API: {str(e)}")
-            # Fallback parsing without AI
-            user_lower = user_input.lower()
-            if "vs code" in user_lower or "vscode" in user_lower:
-                return {"command": "open_vscode", "parameters": {}, "description": "Opening Visual Studio Code"}
-            elif "chrome" in user_lower:
-                return {"command": "open_chrome", "parameters": {}, "description": "Opening Google Chrome"}
-            elif "notepad" in user_lower:
-                return {"command": "open_notepad", "parameters": {}, "description": "Opening Notepad"}
-            else:
-                return {"command": "unknown", "error": f"API Error and no fallback match: {str(e)}"}
+            self.log_message(f"❌ Error calling Gemini API: {str(e)}")
+            return self.fallback_parse_command(user_input)
+
+    def fallback_parse_command(self, user_input: str) -> Dict:
+        """Fallback command parsing without AI."""
+        user_lower = user_input.lower()
+        
+        # Simple keyword matching
+        if "vs code" in user_lower or "vscode" in user_lower:
+            return {"command": "open_vscode", "parameters": {}, "description": "Opening Visual Studio Code"}
+        elif "chrome" in user_lower:
+            return {"command": "open_chrome", "parameters": {}, "description": "Opening Google Chrome"}
+        elif "notepad" in user_lower:
+            return {"command": "open_notepad", "parameters": {}, "description": "Opening Notepad"}
+        elif "calculator" in user_lower:
+            return {"command": "open_calculator", "parameters": {}, "description": "Opening Calculator"}
+        elif "google" in user_lower and "search" in user_lower:
+            # Extract search query
+            words = user_input.split()
+            query_words = []
+            found_search = False
+            for word in words:
+                if found_search:
+                    query_words.append(word)
+                elif word.lower() in ["search", "for", "google"]:
+                    found_search = True
+            query = " ".join(query_words) if query_words else "AI"
+            return {"command": "google_search", "parameters": {"query": query}, "description": f"Searching Google for {query}"}
+        elif "youtube" in user_lower and "search" in user_lower:
+            # Extract search query
+            words = user_input.split()
+            query_words = []
+            found_search = False
+            for word in words:
+                if found_search:
+                    query_words.append(word)
+                elif word.lower() in ["search", "for", "youtube"]:
+                    found_search = True
+            query = " ".join(query_words) if query_words else "music"
+            return {"command": "youtube_search", "parameters": {"query": query}, "description": f"Searching YouTube for {query}"}
+        elif "type" in user_lower:
+            # Extract text to type
+            words = user_input.split()
+            text_words = []
+            found_type = False
+            for word in words:
+                if found_type:
+                    text_words.append(word)
+                elif word.lower() == "type":
+                    found_type = True
+            text = " ".join(text_words) if text_words else "Hello World"
+            return {"command": "type_text", "parameters": {"text": text}, "description": f"Typing {text}"}
+        elif "play" in user_lower or "pause" in user_lower:
+            return {"command": "play_pause_media", "parameters": {}, "description": "Playing or pausing media"}
+        elif "screenshot" in user_lower:
+            return {"command": "take_screenshot", "parameters": {}, "description": "Taking a screenshot"}
+        elif "volume up" in user_lower or "increase volume" in user_lower:
+            return {"command": "volume_up", "parameters": {}, "description": "Increasing volume"}
+        elif "volume down" in user_lower or "decrease volume" in user_lower:
+            return {"command": "volume_down", "parameters": {}, "description": "Decreasing volume"}
+        elif "mute" in user_lower or "unmute" in user_lower:
+            return {"command": "mute_unmute", "parameters": {}, "description": "Muting or unmuting audio"}
+        else:
+            return {"command": "unknown", "error": "Command not recognized"}
 
     def execute_command(self, command_data: Dict):
         """Execute the parsed command."""
@@ -621,7 +702,7 @@ class AIAutomationAgent:
 
     def run(self):
         """Start the main application loop."""
-        self.log_message("🚀 AI PC Automation Agent started!")
+        self.log_message("🚀 AI PC Automation Agent started with Google Gemini!")
         self.log_message("💡 Type commands or use voice input to control your PC")
         self.log_message("📋 Check the sample commands below for ideas")
         
@@ -634,7 +715,7 @@ class AIAutomationAgent:
 
 def main():
     """Main entry point of the application."""
-    print("🤖 AI PC Automation Agent")
+    print("🤖 AI PC Automation Agent (Google Gemini)")
     print("=" * 50)
     print("Setting up the application...")
     
